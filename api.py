@@ -10,9 +10,10 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+import httpx
 
 try:
     from curl_cffi import requests as cr
@@ -62,6 +63,10 @@ WEB_DOMAINS = [
     "https://netnaija.film",
     "https://movieboxhd.net",
 ]
+
+# High-Performance In-Memory Stream Cache for 1000+ Concurrent Users
+_STREAMS_CACHE: Dict[str, Any] = {}
+_STREAMS_CACHE_TTL = 900  # 15 minutes TTL
 
 def _b64decode(s: str) -> bytes:
     s = s.replace("-", "+").replace("_", "/")
@@ -252,9 +257,31 @@ class MovieBoxEngine:
         return resp.json()
 
     def search(self, query: str, page: int = 1, per_page: int = 20) -> List[Dict[str, Any]]:
-        payload = {"keyword": query, "page": page, "perPage": per_page}
+        # Upstream MovieBox BFF requires perPage <= 20
+        safe_per_page = min(max(int(per_page or 20), 1), 20)
+        payload = {"keyword": query, "page": page, "perPage": safe_per_page}
         url = "/wefeed-mobile-bff/subject-api/search"
-        data = self.api_request("POST", url, body_dict=payload).get("data", {})
+        data = {}
+        try:
+            data = self.api_request("POST", url, body_dict=payload).get("data", {})
+        except Exception:
+            try:
+                # Force token refresh on error
+                self.bootstrap_token(force=True)
+                data = self.api_request("POST", url, body_dict=payload, retry_auth=False).get("data", {})
+            except Exception:
+                try:
+                    # Fallback to H5 web search
+                    h5_url = f"{API_BASE}/subject/search"
+                    headers = {"User-Agent": WEB_USER_AGENT, "Referer": "https://moviebox.ph/"}
+                    resp = self.session.post(h5_url, headers=headers, json={"keyword": query, "page": page, "perPage": per_page}, timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", {})
+                    else:
+                        data = {}
+                except Exception:
+                    data = {}
+
         raw_items = data.get("items", []) or data.get("list", [])
         results = []
         for item in raw_items:
@@ -317,6 +344,13 @@ class MovieBoxEngine:
         return season_list
 
     def get_streams(self, subject_id: str, season: int = 0, episode: int = 0, detail_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        cache_key = f"{subject_id}_{season}_{episode}"
+        now = time.time()
+        if cache_key in _STREAMS_CACHE:
+            cached_time, cached_res = _STREAMS_CACHE[cache_key]
+            if now - cached_time < _STREAMS_CACHE_TTL and cached_res:
+                return cached_res
+
         if not detail_path:
             try:
                 details = self.get_details(subject_id)
@@ -453,6 +487,8 @@ class MovieBoxEngine:
             pass
 
         streams.sort(key=lambda s: s["quality_value"], reverse=True)
+        if streams:
+            _STREAMS_CACHE[cache_key] = (now, streams)
         return streams
 
     def get_subtitles(self, subject_id: str, stream_id: Optional[str] = None, season: int = 0, episode: int = 0) -> List[Dict[str, Any]]:
@@ -1035,15 +1071,21 @@ async def dashboard():
     return HTMLResponse(content=html_content)
 
 @app.get("/search")
-def search(q: str = Query(..., min_length=1), page: int = 1, per_page: int = 20):
-    return {"query": q, "page": page, "results": engine.search(q, page=page, per_page=per_page)}
+def search(q: Optional[str] = Query(None), keyword: Optional[str] = Query(None), page: int = 1, per_page: int = 20):
+    query_str = (q or keyword or "").strip()
+    if not query_str:
+        return {"query": "", "page": page, "results": []}
+    return {"query": query_str, "page": page, "results": engine.search(query_str, page=page, per_page=per_page)}
 
 @app.get("/search/suggest")
-def search_suggest(q: str = Query(..., min_length=1)):
+def search_suggest(q: Optional[str] = Query(None), keyword: Optional[str] = Query(None)):
+    query_str = (q or keyword or "").strip()
+    if not query_str:
+        return {"suggestions": []}
     url = f"{API_BASE}/subject/search-suggest"
     headers = {"User-Agent": WEB_USER_AGENT, "Referer": "https://moviebox.ph/"}
     try:
-        resp = engine.session.post(url, headers=headers, json={"keyword": q, "perPage": 10}, timeout=15)
+        resp = engine.session.post(url, headers=headers, json={"keyword": query_str, "perPage": 10}, timeout=15)
         raw = resp.json().get("data", {}).get("items", [])
     except Exception:
         raw = []
@@ -1068,6 +1110,11 @@ def get_episodes(subject_id: str):
 @app.get("/api/stream/{subject_id}")
 def get_streams(subject_id: str, se: int = 0, ep: int = 0, detail_path: Optional[str] = None):
     streams = engine.get_streams(subject_id, season=se, episode=ep, detail_path=detail_path)
+    if not streams and (se > 0 or ep > 0):
+        # Fallback for movies where caller erroneously passed season/episode
+        movie_streams = engine.get_streams(subject_id, season=0, episode=0, detail_path=detail_path)
+        if movie_streams:
+            streams = movie_streams
     return {
         "subject_id": subject_id,
         "season": se,
@@ -1079,6 +1126,10 @@ def get_streams(subject_id: str, se: int = 0, ep: int = 0, detail_path: Optional
 @app.get("/api/stream/{subject_id}/captions")
 def get_captions(subject_id: str, se: int = 0, ep: int = 0, stream_id: Optional[str] = None):
     subs = engine.get_subtitles(subject_id, stream_id=stream_id, season=se, episode=ep)
+    if not subs and (se > 0 or ep > 0):
+        movie_subs = engine.get_subtitles(subject_id, stream_id=stream_id, season=0, episode=0)
+        if movie_subs:
+            subs = movie_subs
     return {
         "subject_id": subject_id,
         "season": se,
@@ -1140,6 +1191,76 @@ def get_home():
     url = f"{API_BASE}/home?host=moviebox.ph"
     resp = engine.session.get(url, headers={"User-Agent": WEB_USER_AGENT, "Referer": "https://moviebox.ph/"}, timeout=20)
     return resp.json()
+
+@app.api_route("/proxy/video", methods=["GET", "HEAD"])
+async def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": referer or "https://sflix.film/",
+        "Origin": referer.rstrip("/") if referer else "https://sflix.film"
+    }
+    if cookie:
+        req_headers["Cookie"] = cookie
+    if "range" in request.headers:
+        req_headers["Range"] = request.headers["range"]
+
+    client = httpx.AsyncClient(follow_redirects=True, timeout=60.0)
+    try:
+        upstream_req = client.build_request("GET", url, headers=req_headers)
+        upstream_resp = await client.send(upstream_req, stream=True)
+        
+        response_headers = {}
+        for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control"]:
+            if h in upstream_resp.headers:
+                response_headers[h] = upstream_resp.headers[h]
+        if "accept-ranges" not in response_headers:
+            response_headers["accept-ranges"] = "bytes"
+        response_headers["Access-Control-Allow-Origin"] = "*"
+        response_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Type"
+
+        async def stream_generator():
+            try:
+                async for chunk in upstream_resp.aiter_bytes(chunk_size=65536):
+                    yield chunk
+            finally:
+                await upstream_resp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            stream_generator(),
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+            media_type=response_headers.get("content-type", "video/mp4")
+        )
+    except Exception as e:
+        await client.aclose()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/proxy/subtitle")
+async def proxy_subtitle(url: str = Query(...)):
+    """Fetches SRT/VTT subtitles, converts SRT to standard WebVTT, and returns text/vtt with UTF-8."""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+        try:
+            resp = await client.get(url)
+            text = resp.text
+            # Convert SRT to WebVTT if it starts with an integer or contains '-->'
+            if "-->" in text:
+                vtt_text = "WEBVTT\n\n"
+                # Replace comma with period in timestamps: 00:01:20,000 --> 00:01:23,000
+                vtt_text += re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", text)
+            else:
+                vtt_text = text
+
+            return Response(
+                content=vtt_text,
+                media_type="text/vtt; charset=utf-8",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Type": "text/vtt; charset=utf-8"
+                }
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Subtitle fetch error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
