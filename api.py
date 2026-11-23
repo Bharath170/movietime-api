@@ -56,12 +56,8 @@ BOOTSTRAP_URL = f"{BOOTSTRAP_HOST}/wefeed-mobile-bff/tab/ranking-list?tabId=0&ca
 
 # Active, healthy MovieBox Web CDN domains verified live
 WEB_DOMAINS = [
-    "https://sflix.film",
-    "https://moviebox.ph",
     "https://movieboxofficial.net",
-    "https://movieboxhd.net",
-    "https://netnaija.film",
-    "https://www.moviesbox.com.co",
+    "https://sflix.film",
     "https://h5-api.aoneroom.com",
 ]
 
@@ -384,7 +380,7 @@ class MovieBoxEngine:
                 "Authorization": f"Bearer {token}",
             }
             try:
-                resp = self.session.get(play_url, headers=headers, timeout=12)
+                resp = self.session.get(play_url, headers=headers, timeout=4.5)
                 if resp.status_code != 200:
                     continue
                 data = resp.json().get("data", {})
