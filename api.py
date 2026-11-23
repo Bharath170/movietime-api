@@ -64,9 +64,9 @@ WEB_DOMAINS = [
     "https://movieboxhd.net",
 ]
 
-# High-Performance In-Memory Stream Cache for 1000+ Concurrent Users
+# High-Performance In-Memory Stream Cache (60s TTL to prevent signed CDN URL expiration)
 _STREAMS_CACHE: Dict[str, Any] = {}
-_STREAMS_CACHE_TTL = 900  # 15 minutes TTL
+_STREAMS_CACHE_TTL = 60  # 60s TTL for fresh CDN signatures
 
 def _b64decode(s: str) -> bytes:
     s = s.replace("-", "+").replace("_", "/")
@@ -1215,6 +1215,22 @@ def test_stream(url: str):
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://123moviesfree.club/", "Range": "bytes=0-100"}
     r = py_requests.get(url, headers=headers)
     return {"cr_available": cr is not None, "status": r.status_code, "headers": dict(r.headers), "body": r.text[:200]}
+
+@app.get("/test-proxy")
+def test_proxy(url: str):
+    import requests
+    target_referer = "https://123moviesfree.club/"
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": target_referer,
+        "Origin": target_referer.rstrip("/"),
+        "Range": "bytes=0-100"
+    }
+    try:
+        r = requests.get(url, headers=req_headers, timeout=10)
+        return {"status": r.status_code, "headers": dict(r.headers), "text": r.text[:200]}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
 def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
