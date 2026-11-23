@@ -1210,22 +1210,63 @@ def get_home(request: Request):
     return resp.json()
 
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
-async def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
+def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
+    target_referer = referer or "https://123moviesfree.club/"
+    if "hakunaymatata.com" in url or not referer:
+        target_referer = "https://123moviesfree.club/"
+
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": referer or "https://sflix.film/",
-        "Origin": referer.rstrip("/") if referer else "https://sflix.film"
+        "Referer": target_referer,
+        "Origin": target_referer.rstrip("/"),
+        "X-Forwarded-For": "49.204.100.1",
+        "X-Real-IP": "49.204.100.1",
+        "CF-Connecting-IP": "49.204.100.1",
+        "True-Client-IP": "49.204.100.1",
     }
     if cookie:
         req_headers["Cookie"] = cookie
     if "range" in request.headers:
         req_headers["Range"] = request.headers["range"]
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=60.0)
+    if cr:
+        try:
+            resp = cr.get(
+                url,
+                headers=req_headers,
+                impersonate="chrome120",
+                stream=True,
+                timeout=35
+            )
+            response_headers = {}
+            for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control", "etag", "last-modified"]:
+                if h in resp.headers:
+                    response_headers[h] = resp.headers[h]
+            if "accept-ranges" not in response_headers:
+                response_headers["accept-ranges"] = "bytes"
+            response_headers["Access-Control-Allow-Origin"] = "*"
+            response_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Type"
+
+            def iter_content():
+                try:
+                    for chunk in resp.iter_content(chunk_size=131072):
+                        if chunk:
+                            yield chunk
+                finally:
+                    resp.close()
+
+            return StreamingResponse(
+                iter_content(),
+                status_code=resp.status_code,
+                headers=response_headers,
+                media_type=response_headers.get("content-type", "video/mp4")
+            )
+        except Exception as e:
+            logger.warning(f"curl_cffi proxy_video error: {e}, falling back to httpx")
+
+    client = httpx.Client(follow_redirects=True, timeout=30.0)
     try:
-        upstream_req = client.build_request("GET", url, headers=req_headers)
-        upstream_resp = await client.send(upstream_req, stream=True)
-        
+        upstream_resp = client.send(client.build_request("GET", url, headers=req_headers), stream=True)
         response_headers = {}
         for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control"]:
             if h in upstream_resp.headers:
@@ -1235,13 +1276,13 @@ async def proxy_video(request: Request, url: str = Query(...), referer: Optional
         response_headers["Access-Control-Allow-Origin"] = "*"
         response_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Type"
 
-        async def stream_generator():
+        def stream_generator():
             try:
-                async for chunk in upstream_resp.aiter_bytes(chunk_size=65536):
+                for chunk in upstream_resp.iter_bytes(chunk_size=65536):
                     yield chunk
             finally:
-                await upstream_resp.aclose()
-                await client.aclose()
+                upstream_resp.close()
+                client.close()
 
         return StreamingResponse(
             stream_generator(),
@@ -1250,7 +1291,7 @@ async def proxy_video(request: Request, url: str = Query(...), referer: Optional
             media_type=response_headers.get("content-type", "video/mp4")
         )
     except Exception as e:
-        await client.aclose()
+        client.close()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/proxy/subtitle")
