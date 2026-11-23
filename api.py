@@ -47,21 +47,22 @@ app.add_middleware(
 
 SECRET_KEY_DEFAULT_B64 = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
 SECRET_KEY_ALT_B64 = "WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ=="
-MODERN_USER_AGENT = "com.community.mbox.in/50020130 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
+MODERN_USER_AGENT = "com.community.mbox.in/50020137 (Linux; U; Android 14; en_IN; Pixel 8; Build/UD1A.230803.041; Cronet/145.0.7582.0)"
 WEB_USER_AGENT = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
 API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 NATIVE_API_BASE = "https://api3.aoneroom.com"
 BOOTSTRAP_HOST = "https://apig.inmoviebox.com"
 BOOTSTRAP_URL = f"{BOOTSTRAP_HOST}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1"
 
+# Active, healthy MovieBox Web CDN domains verified live
 WEB_DOMAINS = [
-    "https://123moviesfree.club",
-    "https://movie-box.co",
-    "https://movieboxonline.net",
     "https://sflix.film",
-    "https://h5-api.aoneroom.com",
-    "https://netnaija.film",
+    "https://moviebox.ph",
+    "https://movieboxofficial.net",
     "https://movieboxhd.net",
+    "https://netnaija.film",
+    "https://www.moviesbox.com.co",
+    "https://h5-api.aoneroom.com",
 ]
 
 # High-Performance In-Memory Stream Cache (60s TTL to prevent signed CDN URL expiration)
@@ -1212,14 +1213,14 @@ def get_home(request: Request):
 @app.get("/test-stream")
 def test_stream(url: str):
     import requests as py_requests
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://123moviesfree.club/", "Range": "bytes=0-100"}
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://sflix.film/", "Range": "bytes=0-100"}
     r = py_requests.get(url, headers=headers)
     return {"cr_available": cr is not None, "status": r.status_code, "headers": dict(r.headers), "body": r.text[:200]}
 
 @app.get("/test-proxy")
 def test_proxy(url: str, referer: Optional[str] = None):
     import requests
-    target_referer = referer or "https://123moviesfree.club/"
+    target_referer = referer or "https://sflix.film/"
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": target_referer,
@@ -1234,7 +1235,7 @@ def test_proxy(url: str, referer: Optional[str] = None):
 
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
 def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
-    target_referer = referer or "https://123moviesfree.club/"
+    target_referer = referer or "https://sflix.film/"
 
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
