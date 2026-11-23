@@ -399,6 +399,10 @@ class MovieBoxEngine:
                         seen_urls.add(url)
                         res_str = str(st.get("resolutions", "unknown"))
                         size_bytes = int(st.get("size") or 0)
+                        duration_sec = int(st.get("duration") or 0)
+                        # Filter out short preview/trailer/sample clips (e.g. 18-23s teaser clips < 15MB)
+                        if (0 < size_bytes < 15 * 1024 * 1024) or (0 < duration_sec < 180):
+                            continue
                         size_mb = size_bytes / (1024 * 1024) if size_bytes else 0
                         quality_val = 0
                         for q in (2160, 1440, 1080, 720, 480, 360, 240):
@@ -471,6 +475,10 @@ class MovieBoxEngine:
                         quality_val = q
                         break
                 size_bytes = int(st.get("size") or 0)
+                duration_sec = int(st.get("duration") or 0)
+                # Filter out short preview/trailer/sample clips (e.g. 18-23s teaser clips < 15MB)
+                if (0 < size_bytes < 15 * 1024 * 1024) or (0 < duration_sec < 180):
+                    continue
                 size_mb = size_bytes / (1024 * 1024) if size_bytes else 0
                 streams.append({
                     "source": "Mobile Native CDN",
@@ -1513,6 +1521,127 @@ async def telegram_broadcast(request: Request):
 
     res = await telegram_bot.broadcast_to_channel(token, channel_id, text, photo_url)
     return res
+
+LIVE_TV_CHANNELS = [
+    {
+        "id": "10tv-telugu",
+        "name": "10 TV Telugu News",
+        "language": "Telugu",
+        "category": "Telugu",
+        "logo": "https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=160&h=160&fit=crop",
+        "url": "https://mumbai-edge.smartplaytv.in/10TV/index.m3u8",
+        "quality": "720p HD",
+        "description": "24/7 Live Telugu News, breaking updates and discussions.",
+    },
+    {
+        "id": "6tv-telugu",
+        "name": "6 TV Telugu",
+        "language": "Telugu",
+        "category": "Telugu",
+        "logo": "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=160&h=160&fit=crop",
+        "url": "https://mumbai-edge.smartplaytv.in/6TVTelugu/index.m3u8",
+        "quality": "576p HD",
+        "description": "Live Andhra Pradesh & Telangana regional news and current affairs.",
+    },
+    {
+        "id": "99tv-telugu",
+        "name": "99 TV Telugu",
+        "language": "Telugu",
+        "category": "Telugu",
+        "logo": "https://images.unsplash.com/photo-1504711434969-e33886168f5c?w=160&h=160&fit=crop",
+        "url": "https://cdn.pishow.tv/ott/live/1211/master.m3u8",
+        "quality": "720p HD",
+        "description": "Telugu 24x7 news and analytical debates.",
+    },
+    {
+        "id": "aaj-tak",
+        "name": "Aaj Tak HD",
+        "language": "Hindi",
+        "category": "News",
+        "logo": "https://images.unsplash.com/photo-1586339949916-3e9457bef6d3?w=160&h=160&fit=crop",
+        "url": "https://d1rc86nwwc9fag.cloudfront.net/vglive-sk-791258/master.m3u8",
+        "quality": "720p HD",
+        "description": "India's #1 Hindi news channel with 24/7 live national coverage.",
+    },
+    {
+        "id": "9x-jalwa",
+        "name": "9X Jalwa (Bollywood Hits)",
+        "language": "Hindi",
+        "category": "Music",
+        "logo": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=160&h=160&fit=crop",
+        "url": "https://wiselp.wiseplayout.com/9X_Jalwa/master.m3u8",
+        "quality": "1080p Ultra HD",
+        "description": "Non-stop 24/7 Bollywood musical blockbusters and evergreen hit songs.",
+    },
+    {
+        "id": "9x-jhakaas",
+        "name": "9X Jhakaas Hits",
+        "language": "Hindi",
+        "category": "Music",
+        "logo": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=160&h=160&fit=crop",
+        "url": "https://amg01281-9xmediapvtltd-9xjhakaas-samsungin-ci2cs.amagi.tv/playlist/amg01281-9xmediapvtltd-9xjhakaas-samsungin/playlist.m3u8",
+        "quality": "1080p Ultra HD",
+        "description": "High-energy music videos and chartbusters in 1080p.",
+    },
+    {
+        "id": "9x-tashan",
+        "name": "9X Tashan (Desi Beats)",
+        "language": "Hindi",
+        "category": "Music",
+        "logo": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=160&h=160&fit=crop",
+        "url": "https://amg01281-9xmediapvtltd-9xtashan-samsungin-xz1sd.amagi.tv/playlist/amg01281-9xmediapvtltd-9xtashan-samsungin/playlist.m3u8",
+        "quality": "1080p Ultra HD",
+        "description": "Top party hits, Punjabi and desi chartbusters.",
+    },
+    {
+        "id": "7s-music",
+        "name": "7S Music Hits",
+        "language": "Hindi",
+        "category": "Music",
+        "logo": "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=160&h=160&fit=crop",
+        "url": "https://cdn.pishow.tv/ott/live/1257/master.m3u8",
+        "quality": "576p HD",
+        "description": "All-time popular movie songs and music videos.",
+    },
+    {
+        "id": "4tv-news",
+        "name": "4TV News Live",
+        "language": "Hindi",
+        "category": "News",
+        "logo": "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=160&h=160&fit=crop",
+        "url": "https://fta.ektv.in/live/647/master.m3u8",
+        "quality": "576p HD",
+        "description": "Live political coverage and national headline broadcasts.",
+    },
+    {
+        "id": "24-news",
+        "name": "24 News TV",
+        "language": "Hindi",
+        "category": "News",
+        "logo": "https://images.unsplash.com/photo-1495020689067-958852a7765e?w=160&h=160&fit=crop",
+        "url": "https://mumt07.tangotv.in/zHjX9OFlTWENTYFOURNEWS/index.m3u8",
+        "quality": "576p HD",
+        "description": "Live 24-hour news round-the-clock.",
+    },
+    {
+        "id": "redbull-tv",
+        "name": "Red Bull Sports & Racing Live",
+        "language": "English",
+        "category": "Sports",
+        "logo": "https://images.unsplash.com/photo-1517649763962-0c623266ddc0?w=160&h=160&fit=crop",
+        "url": "https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8",
+        "quality": "1080p Ultra HD",
+        "description": "24/7 Action sports, extreme racing, F1 specials, and adrenaline adventures.",
+    }
+]
+
+@app.get("/api/livetv")
+@app.get("/livetv")
+def get_live_tv():
+    return {
+        "categories": ["All", "Telugu", "News", "Music", "Sports"],
+        "channels": LIVE_TV_CHANNELS
+    }
 
 @app.get("/movietime.apk")
 async def download_apk():
