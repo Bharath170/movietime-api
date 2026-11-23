@@ -1217,9 +1217,9 @@ def test_stream(url: str):
     return {"cr_available": cr is not None, "status": r.status_code, "headers": dict(r.headers), "body": r.text[:200]}
 
 @app.get("/test-proxy")
-def test_proxy(url: str):
+def test_proxy(url: str, referer: Optional[str] = None):
     import requests
-    target_referer = "https://123moviesfree.club/"
+    target_referer = referer or "https://123moviesfree.club/"
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": target_referer,
@@ -1235,8 +1235,6 @@ def test_proxy(url: str):
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
 def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
     target_referer = referer or "https://123moviesfree.club/"
-    if "hakunaymatata.com" in url or not referer:
-        target_referer = "https://123moviesfree.club/"
 
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
