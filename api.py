@@ -1209,6 +1209,13 @@ def get_home(request: Request):
     resp = engine.session.get(url, headers=headers, timeout=20)
     return resp.json()
 
+@app.get("/test-stream")
+def test_stream(url: str):
+    import requests as py_requests
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://123moviesfree.club/", "Range": "bytes=0-100"}
+    r = py_requests.get(url, headers=headers)
+    return {"cr_available": cr is not None, "status": r.status_code, "headers": dict(r.headers), "body": r.text[:200]}
+
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
 def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
     target_referer = referer or "https://123moviesfree.club/"
@@ -1238,6 +1245,8 @@ def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] 
                 stream=True,
                 timeout=35
             )
+            if resp.status_code >= 400:
+                logger.error(f"curl_cffi returned {resp.status_code}: {resp.text[:200]}")
             response_headers = {}
             for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control", "etag", "last-modified"]:
                 if h in resp.headers:
@@ -1264,34 +1273,34 @@ def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] 
         except Exception as e:
             logger.warning(f"curl_cffi proxy_video error: {e}, falling back to httpx")
 
-    client = httpx.Client(follow_redirects=True, timeout=30.0)
     try:
-        upstream_resp = client.send(client.build_request("GET", url, headers=req_headers), stream=True)
+        import requests as py_requests
+        s = py_requests.Session()
+        resp = s.get(url, headers=req_headers, stream=True, timeout=30)
         response_headers = {}
         for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control"]:
-            if h in upstream_resp.headers:
-                response_headers[h] = upstream_resp.headers[h]
+            if h in resp.headers:
+                response_headers[h] = resp.headers[h]
         if "accept-ranges" not in response_headers:
             response_headers["accept-ranges"] = "bytes"
         response_headers["Access-Control-Allow-Origin"] = "*"
         response_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Type"
 
-        def stream_generator():
+        def req_iter():
             try:
-                for chunk in upstream_resp.iter_bytes(chunk_size=65536):
-                    yield chunk
+                for chunk in resp.iter_content(chunk_size=131072):
+                    if chunk:
+                        yield chunk
             finally:
-                upstream_resp.close()
-                client.close()
+                resp.close()
 
         return StreamingResponse(
-            stream_generator(),
-            status_code=upstream_resp.status_code,
+            req_iter(),
+            status_code=resp.status_code,
             headers=response_headers,
             media_type=response_headers.get("content-type", "video/mp4")
         )
     except Exception as e:
-        client.close()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/proxy/subtitle")
