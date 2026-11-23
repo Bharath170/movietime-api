@@ -1142,15 +1142,8 @@ def get_captions(subject_id: str, se: int = 0, ep: int = 0, stream_id: Optional[
     }
 
 def get_upstream_headers(request: Optional[Request] = None, referer: str = "https://moviebox.ph/") -> dict:
+    # Always pin client IP to Indian ISP (ACT Fibernet India) so upstream BFF consistently serves Indian region data (Bollywood, South Indian, Tollywood, Hindi dubs) regardless of proxy/CDN origin
     client_ip = "49.204.100.1"
-    if request:
-        for header_name in ["x-forwarded-for", "cf-connecting-ip", "x-nf-client-connection-ip", "x-real-ip"]:
-            val = request.headers.get(header_name)
-            if val:
-                first_ip = val.split(",")[0].strip()
-                if first_ip and not first_ip.startswith("10.") and not first_ip.startswith("192.168.") and not first_ip.startswith("127."):
-                    client_ip = first_ip
-                    break
     return {
         "User-Agent": WEB_USER_AGENT,
         "Referer": referer,
