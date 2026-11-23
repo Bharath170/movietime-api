@@ -217,6 +217,8 @@ def is_spam_or_promo(message: dict) -> tuple[bool, str]:
         "movietime-app-2026.netlify.app",
         "movietime-api.vercel.app",
         "t.me/movietime_official",
+        "t.me/+804N24YHtUNmMmNl",
+        "t.me/+6FaPdtmVdQ1mNmY1",
         "t.me/+P33k_L7FmI8wM2Nl",
         "t.me/+-k3UaWWIh4IyOTY9"
     ]
