@@ -1416,11 +1416,50 @@ async def telegram_webhook(request: Request, token: Optional[str] = Query(None))
             await telegram_bot.send_welcome_message(token, user_id, welcome_msg)
             return {"ok": True, "action": "approved", "user_id": user_id}
 
-    # Handle /start command in direct message
+    # Handle group & direct messages (Welcome new members, Anti-Spam / Auto-Delete external links, Commands)
     message = data.get("message")
     if message and token:
         chat_id = message.get("chat", {}).get("id")
+        message_id = message.get("message_id")
         text = message.get("text", "")
+
+        # 1. Welcome new members joining the community
+        new_members = message.get("new_chat_members", [])
+        if new_members and chat_id:
+            for member in new_members:
+                if member.get("is_bot") and member.get("id") != 9232684763:
+                    await telegram_bot.delete_message(token, chat_id, message_id)
+                else:
+                    first_name = member.get("first_name", "Movie Fan")
+                    member_id = member.get("id")
+                    await telegram_bot.send_group_welcome(token, chat_id, first_name, member_id)
+            return {"ok": True, "action": "welcome_group_members"}
+
+        # 2. Anti-Spam: Auto-delete unauthorized bots, links, and promotional messages
+        is_spam, reason = telegram_bot.is_spam_or_promo(message)
+        if is_spam and chat_id and message_id:
+            await telegram_bot.delete_message(token, chat_id, message_id)
+            sender = message.get("from", {})
+            sender_name = sender.get("first_name", "User")
+            warning = f"⚠️ *{sender_name}*, external links and promotional messages are automatically removed in MovieTime Community."
+            await telegram_bot.send_welcome_message(token, chat_id, warning)
+            return {"ok": True, "action": "deleted_spam", "reason": reason}
+
+        # 3. Handle /update or /apk command
+        if (text.startswith("/update") or text.startswith("/apk")) and chat_id:
+            apk_info = (
+                "🚀 *MovieTime v2.5.0 Release is Live!* 🎬\n\n"
+                "• ⚡ *Instant Playback*: Decoupled edge CDNs start streaming in <1s.\n"
+                "• 📲 *In-App 1-Click Updater*: Auto-downloads & installs directly on device.\n"
+                "• 🎬 *Immersive Fullscreen*: Hidden system status and navigation bars.\n"
+                "• 🍿 *Indian High-Speed CDN Mirrors*: No freezing on Haiku, Ranabaali, etc.\n\n"
+                "📱 *Download APK (v2.5.0):* https://movietime-app-2026.netlify.app/movietime.apk\n"
+                "🌐 *Watch Online:* https://movietime-app-2026.netlify.app"
+            )
+            await telegram_bot.send_welcome_message(token, chat_id, apk_info)
+            return {"ok": True, "action": "apk_info_sent"}
+
+        # 4. Handle /start command in direct message
         if text.startswith("/start") and chat_id:
             await telegram_bot.send_welcome_message(token, chat_id)
             return {"ok": True, "action": "welcome_sent"}

@@ -147,3 +147,100 @@ async def send_photo_bytes(
             return resp.json()
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+async def delete_message(bot_token: str, chat_id: str | int, message_id: int) -> Dict[str, Any]:
+    """Delete a spam or promotional message from channel or community group."""
+    url = f"{TELEGRAM_API_BASE}/bot{bot_token}/deleteMessage"
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(url, json=payload)
+            return resp.json()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+async def send_group_welcome(
+    bot_token: str,
+    chat_id: str | int,
+    user_name: str,
+    user_id: Optional[int] = None
+) -> Dict[str, Any]:
+    """Send greeting to new members joining the community group."""
+    url = f"{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage"
+    user_tag = f"[{user_name}](tg://user?id={user_id})" if user_id else f"*{user_name}*"
+    text = (
+        f"🎬 *Welcome {user_tag} to MovieTime Community!* 🍿\n\n"
+        "Stream 10,000+ Movies & Web Series in 1080p Ultra HD for free with dual audio (Telugu, Hindi, English)!\n\n"
+        "📱 *Download APK (v2.5.0):* [Download Here](https://movietime-app-2026.netlify.app/movietime.apk)\n"
+        "🌐 *Watch Online:* [movietime-app-2026.netlify.app](https://movietime-app-2026.netlify.app)\n\n"
+        "✨ Feel free to discuss movies and request titles.\n"
+        "⚠️ *Notice: Spam, unauthorized bots, and external links are automatically deleted.*"
+    )
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "📱 Download App (v2.5.0)", "url": "https://movietime-app-2026.netlify.app/movietime.apk"},
+                    {"text": "🌐 Watch Online", "url": "https://movietime-app-2026.netlify.app"}
+                ]
+            ]
+        }
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(url, json=payload)
+            return resp.json()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+def is_spam_or_promo(message: dict) -> tuple[bool, str]:
+    """Check if message is from an unauthorized bot or contains external promotional links."""
+    # 1. Check if sender is an external bot (not MovieTime Bot)
+    sender = message.get("from", {})
+    if sender.get("is_bot") and sender.get("id") != 9232684763:
+        return True, "External bot messages are not allowed."
+
+    text = message.get("text", "") or message.get("caption", "")
+    if not text:
+        # Check forwarded messages from external channels
+        if message.get("forward_from_chat") or message.get("forward_origin"):
+            return True, "Forwarded promotions are not allowed."
+        return False, ""
+
+    # 2. Check for links / entities
+    entities = message.get("entities", []) + message.get("caption_entities", [])
+    allowed = [
+        "movietime-app-2026.netlify.app",
+        "movietime-api.vercel.app",
+        "t.me/movietime_official",
+        "t.me/+P33k_L7FmI8wM2Nl",
+        "t.me/+-k3UaWWIh4IyOTY9"
+    ]
+    for ent in entities:
+        if ent.get("type") in ["url", "text_link"]:
+            link_url = ent.get("url") or text[ent.get("offset", 0):ent.get("offset", 0) + ent.get("length", 0)]
+            if not any(domain in link_url.lower() for domain in allowed):
+                return True, "External links are not allowed in this community."
+
+    import re
+    urls = re.findall(r'(https?://\S+|t\.me/\S+)', text, re.IGNORECASE)
+    for u in urls:
+        if not any(domain in u.lower() for domain in allowed):
+            return True, "External links and promotions are not allowed."
+
+    # Check for promotional spam keywords
+    spam_keywords = [
+        "earn money", "free crypto", "join channel", "investment plan",
+        "airdrop", "binance", "whatsapp group", "contact on whatsapp",
+        "dm for", "paid promotion", "trading signals", "betting app"
+    ]
+    low_text = text.lower()
+    for kw in spam_keywords:
+        if kw in low_text:
+            return True, "Promotional spam is not permitted."
+
+    return False, ""
