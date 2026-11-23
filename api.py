@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 import httpx
 
 try:
@@ -1138,11 +1138,31 @@ def get_captions(subject_id: str, se: int = 0, ep: int = 0, stream_id: Optional[
         "captions": subs
     }
 
+def get_upstream_headers(request: Optional[Request] = None, referer: str = "https://moviebox.ph/") -> dict:
+    client_ip = "49.204.100.1"
+    if request:
+        for header_name in ["x-forwarded-for", "cf-connecting-ip", "x-nf-client-connection-ip", "x-real-ip"]:
+            val = request.headers.get(header_name)
+            if val:
+                first_ip = val.split(",")[0].strip()
+                if first_ip and not first_ip.startswith("10.") and not first_ip.startswith("192.168.") and not first_ip.startswith("127."):
+                    client_ip = first_ip
+                    break
+    return {
+        "User-Agent": WEB_USER_AGENT,
+        "Referer": referer,
+        "X-Forwarded-For": client_ip,
+        "X-Real-IP": client_ip,
+        "CF-Connecting-IP": client_ip,
+        "True-Client-IP": client_ip,
+        "Accept-Language": "en-IN,en;q=0.9,te;q=0.8,hi;q=0.7",
+    }
+
 @app.get("/movies")
-def get_movies(page: int = 1, per_page: int = 24, sort: str = "RECOMMEND"):
+def get_movies(request: Request, page: int = 1, per_page: int = 24, sort: str = "RECOMMEND"):
     url = f"{API_BASE}/subject/filter"
     payload = {"tabId": 2, "filter": {"sort": sort, "genre": "ALL", "country": "ALL", "year": "ALL", "language": "ALL"}, "page": page, "perPage": per_page}
-    resp = engine.session.post(url, headers={"User-Agent": WEB_USER_AGENT, "Referer": "https://moviebox.ph/"}, json=payload, timeout=20)
+    resp = engine.session.post(url, headers=get_upstream_headers(request), json=payload, timeout=20)
     data = resp.json().get("data", {})
     raw = data.get("items") or data.get("subjects") or []
     return {
@@ -1163,10 +1183,10 @@ def get_movies(page: int = 1, per_page: int = 24, sort: str = "RECOMMEND"):
     }
 
 @app.get("/tv-series")
-def get_tv_series(page: int = 1, per_page: int = 24, sort: str = "RECOMMEND"):
+def get_tv_series(request: Request, page: int = 1, per_page: int = 24, sort: str = "RECOMMEND"):
     url = f"{API_BASE}/subject/filter"
     payload = {"tabId": 5, "filter": {"sort": sort, "genre": "ALL", "country": "ALL", "year": "ALL", "language": "ALL"}, "page": page, "perPage": per_page}
-    resp = engine.session.post(url, headers={"User-Agent": WEB_USER_AGENT, "Referer": "https://moviebox.ph/"}, json=payload, timeout=20)
+    resp = engine.session.post(url, headers=get_upstream_headers(request), json=payload, timeout=20)
     data = resp.json().get("data", {})
     raw = data.get("items") or data.get("subjects") or []
     return {
@@ -1187,9 +1207,10 @@ def get_tv_series(page: int = 1, per_page: int = 24, sort: str = "RECOMMEND"):
     }
 
 @app.get("/home")
-def get_home():
+def get_home(request: Request):
+    headers = get_upstream_headers(request)
     url = f"{API_BASE}/home?host=moviebox.ph"
-    resp = engine.session.get(url, headers={"User-Agent": WEB_USER_AGENT, "Referer": "https://moviebox.ph/"}, timeout=20)
+    resp = engine.session.get(url, headers=headers, timeout=20)
     return resp.json()
 
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
@@ -1261,6 +1282,149 @@ async def proxy_subtitle(url: str = Query(...)):
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Subtitle fetch error: {str(e)}")
+
+import telegram_bot
+import base64
+
+_telegram_events: list = []
+_last_channel_info: dict = {}
+
+@app.get("/api/telegram/status")
+async def telegram_status(token: str = Query(...)):
+    """Check if bot token is valid and return bot profile."""
+    res = await telegram_bot.get_bot_info(token)
+    return res
+
+@app.get("/api/telegram/last_updates")
+async def telegram_last_updates():
+    """Return recently received webhook events and detected channel information."""
+    return {
+        "channel": _last_channel_info,
+        "count": len(_telegram_events),
+        "recent_events": _telegram_events[-15:]
+    }
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request, token: Optional[str] = Query(None)):
+    """Handle incoming Telegram webhook events: /start, auto-approving chat_join_request, etc."""
+    global _last_channel_info
+    try:
+        data = await request.json()
+        _telegram_events.append(data)
+        if len(_telegram_events) > 100:
+            _telegram_events.pop(0)
+    except Exception:
+        return {"ok": False, "error": "Invalid JSON"}
+
+    # Detect channel information from any event
+    for key in ["channel_post", "my_chat_member", "chat_member", "chat_join_request"]:
+        if key in data:
+            chat = data[key].get("chat", {})
+            if chat.get("id"):
+                _last_channel_info = {
+                    "chat_id": chat.get("id"),
+                    "title": chat.get("title", ""),
+                    "type": chat.get("type", "")
+                }
+                # Also auto sync to Firestore if possible
+                try:
+                    import requests as req
+                    api_key = 'AIzaSyD_X9Rjy7d_l3Ar8VLJQ24tE0Sf_s4GxQQ'
+                    patch_url = f'https://firestore.googleapis.com/v1/projects/novaedit-app-2026/databases/(default)/documents/app_config/settings?key={api_key}&updateMask.fieldPaths=telegramChannelId'
+                    req.patch(patch_url, json={'fields': {'telegramChannelId': {'stringValue': str(chat.get('id'))}}}, timeout=3.0)
+                except Exception:
+                    pass
+
+    # Handle chat join request (Auto-Approve Community Members)
+    join_request = data.get("chat_join_request")
+    if join_request and token:
+        chat_id = join_request.get("chat", {}).get("id")
+        user_id = join_request.get("from", {}).get("id")
+        first_name = join_request.get("from", {}).get("first_name", "Movie Fan")
+        if chat_id and user_id:
+            # 1. Auto-approve join request
+            await telegram_bot.approve_chat_join_request(token, chat_id, user_id)
+            # 2. Send instant welcome message
+            welcome_msg = (
+                f"👋 Hello {first_name}!\n\n"
+                "🎬 *Your join request to MovieTime Community has been Approved!* 🍿\n\n"
+                "Watch 10,000+ Movies & Series in 1080p Ultra HD for free with Telugu, Hindi & English audio!\n\n"
+                "🌐 *Stream Online:* https://movietime-app-2026.netlify.app\n"
+                "📱 *Download Android APK:* https://movietime-app-2026.netlify.app/movietime.apk"
+            )
+            await telegram_bot.send_welcome_message(token, user_id, welcome_msg)
+            return {"ok": True, "action": "approved", "user_id": user_id}
+
+    # Handle /start command in direct message
+    message = data.get("message")
+    if message and token:
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "")
+        if text.startswith("/start") and chat_id:
+            await telegram_bot.send_welcome_message(token, chat_id)
+            return {"ok": True, "action": "welcome_sent"}
+
+    return {"ok": True}
+
+@app.post("/api/telegram/set_photo")
+async def telegram_set_photo(request: Request):
+    """Set channel avatar photo."""
+    body = await request.json()
+    token = body.get("token")
+    channel_id = body.get("channel_id") or _last_channel_info.get("chat_id")
+    image_base64 = body.get("image_base64")
+    image_url = body.get("image_url")
+
+    if not token or not channel_id:
+        raise HTTPException(status_code=400, detail="token and channel_id are required")
+
+    photo_bytes = None
+    if image_base64:
+        photo_bytes = base64.b64decode(image_base64)
+    elif image_url:
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(image_url)
+            photo_bytes = resp.content
+
+    if not photo_bytes:
+        raise HTTPException(status_code=400, detail="No photo provided")
+
+    res = await telegram_bot.set_chat_photo(token, channel_id, photo_bytes)
+    return res
+
+@app.post("/api/telegram/broadcast")
+async def telegram_broadcast(request: Request):
+    """Broadcast movie or announcement to Telegram channel."""
+    body = await request.json()
+    token = body.get("token")
+    channel_id = body.get("channel_id") or _last_channel_info.get("chat_id")
+    text = body.get("text", "")
+    photo_url = body.get("photo_url")
+    image_base64 = body.get("image_base64")
+
+    if not token or not channel_id:
+        raise HTTPException(status_code=400, detail="token and channel_id are required")
+
+    if image_base64:
+        photo_bytes = base64.b64decode(image_base64)
+        res = await telegram_bot.send_photo_bytes(token, channel_id, photo_bytes, text)
+        return res
+
+    res = await telegram_bot.broadcast_to_channel(token, channel_id, text, photo_url)
+    return res
+
+@app.get("/movietime.apk")
+async def download_apk():
+    """Serve official MovieTime Android APK for direct high-speed download."""
+    apk_path = os.path.join(os.path.dirname(__file__), "movietime.apk")
+    if os.path.exists(apk_path):
+        return FileResponse(
+            apk_path,
+            media_type="application/vnd.android.package-archive",
+            filename="movietime.apk"
+        )
+    raise HTTPException(status_code=404, detail="APK file not found on server")
 
 if __name__ == "__main__":
     import uvicorn
