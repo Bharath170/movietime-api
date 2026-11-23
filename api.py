@@ -166,6 +166,9 @@ def build_auth_headers(method: str, url: str, body: str | None = None, token: st
         "x-tr-signature": generate_x_tr_signature(method, accept, content_type, url, body, ts, use_alt_key),
         "x-client-info": generate_client_info(dev_id),
         "x-client-status": "0",
+        "x-forwarded-for": "49.204.100.1",
+        "x-real-ip": "49.204.100.1",
+        "cf-connecting-ip": "49.204.100.1",
     }
     if token:
         headers["authorization"] = f"Bearer {token}"
@@ -221,7 +224,7 @@ class MovieBoxEngine:
         resp = self.session.get(BOOTSTRAP_URL, headers=headers, timeout=20)
         x_user = resp.headers.get("x-user")
         if not x_user:
-            raise HTTPException(status_code=502, detail="Failed to bootstrap MovieBox token")
+            raise HTTPException(status_code=502, detail=f"Failed to bootstrap MovieBox token (HTTP {resp.status_code}): {resp.text[:150]}")
         token_data = json.loads(x_user)
         token = token_data.get("token")
         if not token:
