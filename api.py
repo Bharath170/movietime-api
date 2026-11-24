@@ -1277,7 +1277,7 @@ def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] 
 
             def iter_content():
                 try:
-                    for chunk in resp.iter_content(chunk_size=131072):
+                    for chunk in resp.iter_content(chunk_size=524288):
                         if chunk:
                             yield chunk
                 finally:
@@ -1307,7 +1307,7 @@ def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] 
 
         def req_iter():
             try:
-                for chunk in resp.iter_content(chunk_size=131072):
+                for chunk in resp.iter_content(chunk_size=524288):
                     if chunk:
                         yield chunk
             finally:
