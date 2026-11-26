@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -9,6 +10,8 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
+
+logger = logging.getLogger("moviebox")
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,9 +59,8 @@ BOOTSTRAP_URL = f"{BOOTSTRAP_HOST}/wefeed-mobile-bff/tab/ranking-list?tabId=0&ca
 
 # Active, healthy MovieBox Web CDN domains verified live
 WEB_DOMAINS = [
-    "https://movieboxofficial.net",
-    "https://sflix.film",
     "https://h5-api.aoneroom.com",
+    "https://sflix.film",
 ]
 
 # High-Performance In-Memory Stream Cache (60s TTL to prevent signed CDN URL expiration)
@@ -417,8 +419,8 @@ class MovieBoxEngine:
                             "duration_sec": st.get("duration"),
                             "headers": {
                                 "User-Agent": "Mozilla/5.0",
-                                "Referer": f"{domain}/",
-                                "Origin": domain,
+                                "Referer": "https://sflix.film/",
+                                "Origin": "https://sflix.film",
                             }
                         })
 
@@ -443,8 +445,8 @@ class MovieBoxEngine:
                                 "cookie": cookie,
                                 "headers": {
                                     "User-Agent": "Mozilla/5.0",
-                                    "Referer": f"{domain}/",
-                                    "Origin": domain,
+                                    "Referer": "https://sflix.film/",
+                                    "Origin": "https://sflix.film",
                                 }
                             })
                     break
@@ -1123,6 +1125,22 @@ def get_streams(subject_id: str, se: int = 0, ep: int = 0, detail_path: Optional
         movie_streams = engine.get_streams(subject_id, season=0, episode=0, detail_path=detail_path)
         if movie_streams:
             streams = movie_streams
+    if not streams:
+        # Fallback to alternate dubs if primary audio has no active streams
+        try:
+            details = engine.get_details(subject_id)
+            dubs = details.get("dubs", [])
+            for dub in dubs:
+                dub_id = str(dub.get("subject_id") or "")
+                if dub_id and dub_id != subject_id:
+                    dub_streams = engine.get_streams(dub_id, season=se, episode=ep)
+                    if not dub_streams and (se > 0 or ep > 0):
+                        dub_streams = engine.get_streams(dub_id, season=0, episode=0)
+                    if dub_streams:
+                        streams = dub_streams
+                        break
+        except Exception:
+            pass
     return {
         "subject_id": subject_id,
         "season": se,
@@ -1239,16 +1257,27 @@ def test_proxy(url: str, referer: Optional[str] = None):
 
 @app.api_route("/proxy/video", methods=["GET", "HEAD"])
 def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] = Query(None), cookie: Optional[str] = Query(None)):
-    target_referer = referer or "https://sflix.film/"
+    # Safely recover full stream URL if inner query params (&sign=, &t=) were passed unencoded
+    full_url = url
+    raw_query = str(request.url.query)
+    if "url=" in raw_query and ("&t=" in raw_query or "&sign=" in raw_query) and ("&t=" not in full_url or "&sign=" not in full_url):
+        extracted = raw_query.split("url=", 1)[1]
+        for p in ["&referer=", "&cookie="]:
+            if p in extracted:
+                extracted = extracted.split(p)[0]
+        import urllib.parse
+        full_url = urllib.parse.unquote(extracted)
+
+    # Always route Hakunaymatata / aoneroom / Moviebox CDNs through https://sflix.film/ to avoid 429 rate limit
+    if not referer or "aoneroom" in referer or "hakunaymatata" in full_url or "moviebox" in referer:
+        target_referer = "https://sflix.film/"
+    else:
+        target_referer = referer
 
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": target_referer,
         "Origin": target_referer.rstrip("/"),
-        "X-Forwarded-For": "49.204.100.1",
-        "X-Real-IP": "49.204.100.1",
-        "CF-Connecting-IP": "49.204.100.1",
-        "True-Client-IP": "49.204.100.1",
     }
     if cookie:
         req_headers["Cookie"] = cookie
@@ -1258,14 +1287,24 @@ def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] 
     if cr:
         try:
             resp = cr.get(
-                url,
+                full_url,
                 headers=req_headers,
                 impersonate="chrome120",
                 stream=True,
                 timeout=35
             )
-            if resp.status_code >= 400:
-                logger.error(f"curl_cffi returned {resp.status_code}: {resp.text[:200]}")
+            if resp.status_code >= 400 and target_referer != "https://sflix.film/":
+                # Auto-fallback to sflix.film referer on 403/429
+                req_headers["Referer"] = "https://sflix.film/"
+                req_headers["Origin"] = "https://sflix.film"
+                resp = cr.get(
+                    full_url,
+                    headers=req_headers,
+                    impersonate="chrome120",
+                    stream=True,
+                    timeout=35
+                )
+
             response_headers = {}
             for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control", "etag", "last-modified"]:
                 if h in resp.headers:
@@ -1290,12 +1329,17 @@ def proxy_video(request: Request, url: str = Query(...), referer: Optional[str] 
                 media_type=response_headers.get("content-type", "video/mp4")
             )
         except Exception as e:
-            logger.warning(f"curl_cffi proxy_video error: {e}, falling back to httpx")
+            logger.warning(f"curl_cffi proxy_video error: {e}, falling back to requests")
 
     try:
         import requests as py_requests
         s = py_requests.Session()
-        resp = s.get(url, headers=req_headers, stream=True, timeout=30)
+        resp = s.get(full_url, headers=req_headers, stream=True, timeout=30)
+        if resp.status_code >= 400 and target_referer != "https://sflix.film/":
+            req_headers["Referer"] = "https://sflix.film/"
+            req_headers["Origin"] = "https://sflix.film"
+            resp = s.get(full_url, headers=req_headers, stream=True, timeout=30)
+
         response_headers = {}
         for h in ["content-type", "content-length", "content-range", "accept-ranges", "cache-control"]:
             if h in resp.headers:
@@ -1520,6 +1564,16 @@ async def telegram_broadcast(request: Request):
 
 LIVE_TV_CHANNELS = [
     {
+        "id": "dd-sports",
+        "name": "DD Sports HD (India Cricket & Sports)",
+        "language": "Hindi/English",
+        "category": "Sports",
+        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/DD_Sports_logo_2023.png/320px-DD_Sports_logo_2023.png",
+        "url": "https://prasarbharati.akamaized.net/hls/live/2034639/PB-DDSports/master.m3u8",
+        "quality": "1080p HD",
+        "description": "Official Indian national sports broadcaster featuring Team India cricket tours, Olympics & national championships."
+    },
+    {
         "id": "redbull-sports",
         "name": "Red Bull Sports & Racing",
         "language": "English",
@@ -1548,6 +1602,26 @@ LIVE_TV_CHANNELS = [
         "url": "https://r.il.cdn-redge.media/livehls/oil/freetv/live/sport_5/live.livx/playlist.m3u8",
         "quality": "1080p HD",
         "description": "World football leagues, tennis tournaments, and live international sports."
+    },
+    {
+        "id": "fight-sports",
+        "name": "Fight Sports TV Live",
+        "language": "English",
+        "category": "Sports",
+        "logo": "https://i0.wp.com/africa24tv.com/wp-content/uploads/2023/12/LOGO-AFRICASPORT-4-HD-sans-fond.png?fit=512%2C107&ssl=1",
+        "url": "https://r.il.cdn-redge.media/livehls/oil/freetv/live/sport_5_starz/live.livx/playlist.m3u8",
+        "quality": "1080p HD",
+        "description": "24/7 Boxing, MMA, kickboxing championship clashes and world martial arts."
+    },
+    {
+        "id": "edge-sports",
+        "name": "Edge Sports HD",
+        "language": "English",
+        "category": "Sports",
+        "logo": "https://i.imgur.com/Lv53nh4.png",
+        "url": "https://edgesportshd-samsunguk.amagi.tv/playlist.m3u8",
+        "quality": "1080p HD",
+        "description": "Action sports, skateboarding, surfing, motocross, and outdoor sporting events."
     },
     {
         "id": "10tv-telugu",
